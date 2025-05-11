@@ -1,0 +1,92 @@
+import streamlit as st
+import requests
+
+API_BASE = "http://localhost:8000"
+CHAT_API = f"{API_BASE}/chat_with_odoo"
+MODELS_API = f"{API_BASE}/list_models"
+FIELDS_API = f"{API_BASE}/list_fields"
+QUERY_API = f"{API_BASE}/query_model"
+
+st.set_page_config(page_title="Odoo GPT Assistant", layout="wide")
+
+st.title("🧠 Odoo Smart Assistant")
+
+tabs = st.tabs(["💬 Ask AI", "📊 Explore Models"])
+
+# ---------------------------
+# 💬 Natural Language Chatbot
+# ---------------------------
+with tabs[0]:
+    st.subheader("Ask questions about your Odoo system")
+
+    if "history" not in st.session_state:
+        st.session_state.history = []
+
+    query = st.text_input("Type your question:")
+
+    if st.button("Ask") and query:
+        with st.spinner("Thinking..."):
+            try:
+                res = requests.get(CHAT_API, params={"q": query})
+                if res.status_code == 200:
+                    result = res.json()
+                    response = result.get("response", result.get("error", "No response"))
+                    st.session_state.history.append((query, response))
+                else:
+                    st.error("Error from backend.")
+            except Exception as e:
+                st.error(str(e))
+
+    for q, r in reversed(st.session_state.history):
+        st.markdown(f"**🟢 You:** {q}")
+        st.markdown(f"**🤖 Assistant:** {r}")
+
+# ---------------------------
+# 📊 Structured Model Explorer
+# ---------------------------
+with tabs[1]:
+    st.subheader("Explore any Odoo model directly")
+
+    # Load models
+    @st.cache_data
+    def load_models():
+        res = requests.get(MODELS_API)
+        return res.json().get("models", []) if res.status_code == 200 else []
+
+    models = load_models()
+    model_lookup = {f"{m['name']} ({m['model']})": m["model"] for m in models}
+    model_label = st.selectbox("Select a model:", [""] + list(model_lookup.keys()))
+
+    if model_label:
+        selected_model = model_lookup[model_label]
+
+        @st.cache_data(ttl=60)
+        def get_fields(model):
+            res = requests.get(FIELDS_API, params={"model": model})
+            return res.json().get("fields", {}) if res.status_code == 200 else {}
+
+        fields = get_fields(selected_model)
+        field_labels = [f"{f} ({v['type']})" for f, v in fields.items()]
+        field_map = {f"{f} ({v['type']})": f for f, v in fields.items()}
+
+        selected_fields = st.multiselect("Fields to fetch:", options=field_labels)
+        field_names = [field_map[f] for f in selected_fields]
+
+        limit = st.number_input("Limit", min_value=1, value=10)
+
+        if st.button("Run Query"):
+            payload = {
+                "model": selected_model,
+                "fields": field_names,
+                "domain": [],
+                "limit": limit
+            }
+            try:
+                res = requests.post(QUERY_API, json=payload)
+                if res.status_code == 200:
+                    data = res.json().get("data", [])
+                    st.write("Results:", data)
+                else:
+                    st.error("Failed to query model.")
+            except Exception as e:
+                st.error(str(e))
